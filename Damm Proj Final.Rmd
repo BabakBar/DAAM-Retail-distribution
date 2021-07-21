@@ -1,0 +1,1237 @@
+---
+title: "Damm Distribución Integral"
+subtitle: "Business Analytics Project"
+author: "Babak Barghi, Han Jia, Alexander Rutten"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+---
+\newpage
+\tableofcontents
+\newpage
+---
+
+# R Setup
+
+The analysis is carried out in *R 4.0.2* and packages below are used.
+
+```{r, message = FALSE, warning=FALSE}
+library(tidyverse)
+library(kableExtra)
+library(RColorBrewer)
+library(skimr)
+library(scales)
+library(tidymodels)
+library(arules)
+library(arulesViz)
+library(waffle)
+my_colors <- RColorBrewer::brewer.pal(6, "OrRd")[4:9]
+```
+
+
+
+```{r setup, include=FALSE, message = FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Introduction
+
+In this report we’re going to review the data that DDI provided to us. This data is about their sales of food and drinks in a few regions in Barcelona. We have to review this data according to a few challenges that DDI gave us: 
+
+*How many bars and restaurants only buy beer or soft drinks to DDI?
+*How much wine or coffee can be sold in the designated areas?
+*For each unit of beer sold, how many units of soft drinks, wine and coffee are sold respectively?
+
+By answering these challenges we will know more about the regions and how they can be significant for DDI. With this knowledge we will try to take on the last challenge:
+
+Could you recommend something completely new about the DDI operations in these districts based on the data?
+
+With the end result we will help DDI by better understanding their data and how this can help DDI in the future.
+
+## Damm Distribución Integral
+
+Damm Distribución Integral (DDI) is a distribution company from Damm. Damm is a Spanish brewery founded in Barcelona in 1876. They’re mainly known for their brands in beer like Estrella Damm, but have a lot of other brands that they sell and distribute across Spain and the world. 
+
+To distribute all their products they’ve their own distribution company, Damm Distribución Integral (DDI). DDI is made up of more than 25 distribution companies dedicated to the hospitality channel with a multiproduct portfolio of more than 12.000 products and references. The company has over 15 years of experience and 53 specialists and sales representatives. With these 15 years of experience they’re able to make 255 commercial routes across Spain to help 47.000 clients in major and smaller cities. 
+
+For our project we will focus on the area of Barcelona. In this area Distridam does the distribution of the products. In Barcelona they have around 9000 clients and more than 3000 products and references they sell to them. Distridam has 34 specialists and sales representatives and 65 Last-Mile delivery trucks to assist them.
+
+The typical client for DDI will be a traditional barista with Basic Academic Training between 30-55 years old. This person is energetic, in neighborhood life and uses little digitalization.
+
+
+## Data Overview
+
+
+DDI has provided us with their own dataset. This dataset contains all the necessary data of their clients in the needed areas of Barcelona. All the purchases are sorted by client. These clients are sorted by the areas that are needed for this project.
+
+The clients, whose names are given, are divided in different establishments, such as restaurants and bars. 
+
+Per client we can exactly see which products they buy from DDI. These products can be divided by type of product, product code and product name. For all these products we can see how many they bought, how many liters/kilos or how much they cost for the client. 
+
+The quantities can be seen by year, the years 2019 and 2020, or by each month of those years. 
+
+
+
+```{r message = FALSE, warning=FALSE}
+#importing the data set
+raw_data <- read_csv("raw-data2.csv",
+                     col_types = cols(
+                       `Total UMB` = col_character()))
+```
+
+
+```{r}
+#Changing Total UMB type to numeric
+raw_data$`Total UMB` <- as.numeric(gsub(",", "", raw_data$`Total UMB`))
+```
+
+
+
+```{r}
+#Check the NAs
+sum(is.na(raw_data))
+```
+As we see there are no missing values in dataset, thus before starting with the analysis we would take a closer look at data frame using *glimpse* function.
+
+```{r}
+#Close look
+glimpse(raw_data)
+```
+
+The dataset *raw_data* provides 94581 observations with 85 different variables.
+
+## Prepare Data
+
+Before getting into the main analysis, we would apply some data manipulation to prepare the data frame for further instructions.
+
+```{r}
+#change column names
+ddi <- 
+  raw_data %>% rename(
+  Postal_Code = `C.Postal`,
+  Store_type = `Tipo establecimiento`,
+  Store_name = `Cliente(dist)`,
+  Sale_type = `Tipo de venta`,
+  Product_line = `Línea de Negocio (dist)`,
+  Product_code = `Codigo Producto`,
+  Product_name = Producto,
+  Total_units20 = `Total UMB`,
+  Total_units19 = `Total UMB  ant.`,
+  Total_amount20 = `Total Litros Kilos`,
+  Total_amount19 = `Total Litros Kilos  ant.`,
+  Total_revenue20 = `Total Euros`,
+  Total_revenue19 = `Total Euros  ant.`
+)
+
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+library(plyr)
+```
+
+```{r message = FALSE, warning=FALSE}
+#Name of area
+ddi$Postal_Code <- revalue(ddi$Postal_Code,
+                           c("08001"="Gotic",
+                             "08002"="Raval",
+                             "08003"="City Center",
+                             "08014"="Sants",
+                             "08028"="Les Corts",
+                             "08860"="Castelldefels",
+                             "08830"="Sant Boi"))
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+detach("package:plyr", unload = TRUE)
+```
+
+
+# Challenges
+
+## Challenge 1
+For this challenge we need to find out how many bars and restaurants only buy beer or soft drinks from DDI. 
+
+Which data did we use?
+We used the data about what kind of category the products are. We did this because we only needed to work with the categories beer and soft drinks. We also needed to use the bar/restaurant names. This way we could get all the bars and restaurants that only bought beer and soft drinks in the years 2019 and 2020. In order to make a proper assumption regarding all the product types, we had to set them in the different categories. 
+
+
+
+```{r}
+#categorize products
+ddi <- 
+  ddi %>% mutate(Product_category = case_when(
+  grepl("ENVASES", Product_line) ~ "Packaging",
+  grepl("AGUA", Product_line) ~ "Water",
+  grepl("CERVEZA", Product_line) ~ "Beer",
+  grepl("GASEOSAS", Product_line) ~ "Soft Drink",
+  grepl("REFRESCOS", Product_line) ~ "Soft Drink",
+  grepl("VINO", Product_line) ~ "Wine",
+  grepl("ZUMO", Product_line) ~ "Soft Drink",
+  Product_line == "ALIMENTACION" ~ "Food",
+  Product_line == "BATIDOS" ~ "Soft Drink",
+  Product_line == "BOTELLEROS" ~ "Specials",
+  Product_line == "PLV" ~ "Specials",
+  Product_line == "CAFE" ~ "Coffee",
+  Product_line == "CO2" ~ "Soft Drink",
+  Product_line == "LACTEOS" ~ "Food",
+  Product_line == "LICORES" ~ "Liqueurs",
+  Product_line == "LIMPIEZA" ~ "Specials",
+  Product_line == "NAVIDAD" ~ "Specials",
+  Product_line == "NO EXISTENCIAS" ~ "Specials",
+))
+```
+
+
+As seen from above, the products are categorized into 9 types. This classification would improve our analysis to have a more in depth perspective to the data frame.
+
+
+```{r}
+#select required variables
+products <- ddi %>% select(Store_name,Product_line, Product_category)
+
+#Only beer or soft drinks
+products %>%
+  group_by(Store_name) %>%
+  filter(all(Product_category == "Beer" | Product_category == "Soft Drink")) %>%
+  pull(Store_name) %>%
+  n_distinct()
+  
+```
+
+We see that among 3199 stores in the dataset only **298** of them only buy beer or soft drinks.
+
+```{r}
+#not beer or soft drinks
+products %>%
+  group_by(Store_name) %>%
+  filter(all(Product_category != "Beer" & Product_category != "Soft Drink")) %>%
+  pull(Store_name) %>% 
+  n_distinct()
+
+
+```
+
+Also among 3199 stores there are **204** stores which don't buy beer and soft drinks from DDI.
+
+
+## Challenge 2
+This challenge will show how much wine or coffee can be sold in the designated areas. We won’t use the prices that DDI gave us in the dataset, but we need to assume that a bar or restaurant can multiply the costs of these products. For wine this means 3 times a bottle and for coffee 10 times per kilo. We will show the results in the number of cases, bottles, kilos or euros.
+
+Which data did we use?
+We again used the data of the categories of the products. Only this time for wine and coffee. To get the costs, and quantities we used the columns of the years and months. In the end we needed the area codes so that we could see the results for every designated area.
+
+First we have to select the columns from the dataset that we need to use for this challenge. After we have done this we want to group them by their postal code and product category. This way we can summarize the results
+
+```{r}
+#getting wine & coffee 
+winecoffee <- ddi %>% 
+  select(Postal_Code, Product_category, Total_units20, 
+         Total_units19, Total_amount20, Total_amount19, 
+         Total_revenue20, Total_revenue19) %>%
+ filter(Product_category == "Wine" | Product_category == "Coffee")
+```
+
+```{r}
+#summarize based on each area and product and totals
+winecoffee_group <- winecoffee %>% 
+  group_by(Postal_Code, Product_category) %>% 
+  summarise(Total_units = sum(Total_units20 + Total_units19), 
+            Total_amounts = sum(Total_amount20 + Total_amount19), 
+            Total_revenue = sum(Total_revenue20 + Total_revenue19))
+
+kable(winecoffee_group) %>%
+kable_styling(bootstrap_options = "hover", full_width = F)
+```
+
+In this table we can see the total amount of units of wine or coffee sold to establishments. We can also see the amount of revenue that came in for DDI, selling these two products to the establishments. 
+To get a better overview of the sales in kilos and liters, we made a bar graph of it so that we can compare the results per region.
+
+
+
+```{r}
+
+winecoffee_group %>% 
+  ggplot(aes(Postal_Code, Total_units, fill=Product_category)) +
+  geom_col(position=position_dodge2(preserve = "single"), width=0.8) +
+  scale_fill_manual(values = my_colors) +
+  labs(x="Area", y= "Total Units Sales (Lit/Kilos)", fill= "Product") +
+  guides(x = guide_axis(n.dodge = 2)) +
+  theme_minimal()
+
+```
+
+```{r}
+Final_revenue_pred <- winecoffee_group %>% 
+  mutate(Total_final_revenue = 
+         case_when(Product_category == "Wine" ~ (Total_revenue*3),
+                   Product_category == "Coffee" ~ (Total_revenue*10)))
+
+Final_revenue_pred
+```
+
+
+```{r}
+
+Final_revenue_pred %>% 
+  ggplot(aes(Postal_Code, Total_final_revenue, fill=Product_category)) +
+  geom_col(position=position_dodge2(preserve = "single"), width=0.8) +
+  scale_fill_manual(values = my_colors) +
+  coord_flip() +
+  scale_y_continuous(labels = label_comma()) +
+  labs(x="Area", y= "Total Final Revenue assumption", fill= "Product") +
+  theme_minimal()
+```
+
+## Challenge 3
+In this challenge we take a look at how many units of soft drinks, wine and coffee we sell in as compared to selling one unit of beer.
+
+Which data did we use?
+From the data we again used the different product categories to compare the amount of units sold of beer, soft drinks, wine and coffee. 
+To get the total amount of units sold for beer, coffee, wine and soft drinks we need to filter the product categories. After we have done this we need to group them by these categories so that we can count them together.
+
+
+
+
+```{r, warning=FALSE, message=FALSE}
+units_count <- 
+  ddi %>% select(Product_category, Total_units20, Total_units19) %>% 
+  filter(Product_category == c("Beer","Coffee","Wine","Soft Drink")) %>% 
+  group_by(Product_category) %>% 
+  summarise(Total_units20 = sum(Total_units20), Total_units19 = sum(Total_units19))
+  
+
+units_count
+```
+
+
+
+In 2019, we can see that 181740 units of beer were sold, 1028 units of coffee were sold, 145036 units of soft drinks were sold and 7313 units of wine were sold. So for each unit of beer sold, 0.00566 units of coffee, 0.80 units of soft drinks and 0.04 units of wine were sold respectively.
+
+Although the amount of units in 2020 is not representative for a normal year because of covid-19 we still took a look at the number of units per each unit of beer sold. 
+
+
+
+# Exploratory Analysis
+
+Some graphs showing the stores
+
+```{r}
+stores<- ddi %>% 
+  select(Postal_Code,Store_type,Store_name)
+
+
+storestype <- stores %>% 
+    group_by(Store_type) %>%
+    pull(Store_type)
+
+stores_type<-stores%>%
+    group_by(Store_type) %>%
+  summarise(n_distinct(Store_name)) 
+```
+
+
+
+```{r}
+stores_type %>%
+ggplot(aes(x=Store_type,y=`n_distinct(Store_name)`))   +
+  geom_bar(stat = "Identity", fill="#4169E1") +
+  labs(x= "Store_type", y = "Nº of stores")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+
+
+
+```{r}
+storesarea <- stores %>% 
+    group_by(Postal_Code) %>%
+    pull(Postal_Code)
+
+stores_area<-stores%>%
+    group_by(Postal_Code) %>%
+  summarise(n_distinct(Store_name)) 
+```
+
+
+```{r}
+stores_area %>%
+ggplot(aes(x=Postal_Code,y=`n_distinct(Store_name)`))   +
+  geom_bar(stat = "Identity", fill="#4169E1") +
+  labs(x= "Postal_code", y = "Nº of stores")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+
+
+
+Some graphs showing the products
+
+
+
+```{r}
+products<- ddi %>% 
+  select(Product_category,Product_name,Store_name)%>%
+  group_by(Product_category) %>%
+  summarise(n_distinct(Product_name),)
+
+products %>%
+ggplot(aes(x=Product_category,y=`n_distinct(Product_name)`))   +
+  geom_bar(stat = "Identity", fill="#4169E1") +
+  labs(x= "Product_category", y = "Nº of products")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+
+```{r}
+products<- ddi %>% 
+  select(Product_category,Product_name,Store_name)%>%
+  group_by(Product_category) %>%
+  summarise(n_distinct(Store_name),)
+
+
+products %>%
+ggplot(aes(x=Product_category,y=`n_distinct(Store_name)`))   +
+  geom_bar(stat = "Identity", fill="#4169E1") +
+  labs(x= "Product_category", y = "Nº of stores")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+In the pie chart below you can see the difference in percentage between each region. It is good to see that there aren’t any real lows or real highs. The lowest percentage is for the region Les Corts with 9% and the highest are for Castelldefels and Sant Boi with both 21%.
+
+```{r}
+slices <- c(4613905,5796771,5426162,4179315,3602648,8554301,8532598)
+lbls <- c("08001", "08002", "08003", "08014", "08028", "08830", "08860")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing revenues per region",col = rainbow(length(lbls)))
+legend("topright", c("Gotic", "Raval", "City Center", "Sants", "Les Corts", "Castelldefels", "Sant Boi"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#I
+
+```
+
+
+```{r}
+ ##Dividing product categories per Region
+products <- ddi %>% select(Postal_Code, Product_category, Total_units20, Total_units19, Total_amount20, Total_amount19, Total_revenue20, Total_revenue19) %>%
+ filter(Product_category == "Wine" | Product_category == "Coffee" | Product_category == "Beer"| Product_category == "Soft Drink" | Product_category == "Water" | Product_category == "Packaging" | Product_category == "Food" | Product_category == "Specials" | Product_category == "Liqueuers" )
+```
+
+```{r}
+#summarize based on each area and product and totals
+products_group <- products %>% group_by(Postal_Code, Product_category) %>% summarise(Total_units = sum(Total_units20 + Total_units19), Total_amounts = sum(Total_amount20 + Total_amount19), Total_revenue = sum(Total_revenue20 + Total_revenue19))
+products_group
+```
+
+In the pie-chart below we can see that, in the region Gotic, by far the product that is sold the most is beer. Beer is 50% of the sales for the average establishment. 
+
+```{r, message=FALSE}
+##Dividing product categories in Gotic
+slices <- c(149737,1361,40155,0,30116,16510,59746,4722)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Gotic",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#
+
+```
+
+
+In the region of Raval we can see that it is a lot different than the pie-chart of Gotic. Instead of beer that was sold the most in Gotic, is it here the soft drinks that are sold the most with 35%. A close second here is water with 30%.
+
+```{r, message=FALSE}
+##Dividing product categories in Raval
+slices <- c(82511,121,34940,0,151506,25121,129565,9000)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Raval",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#
+
+```
+In the next pie-chart we see the results of the region City Center. Here is again one high with 36% of Soft Drinks. After this high there are another 2 big groups, beer and water with 25% and 24%.
+
+
+```{r, message=FALSE}
+##Dividing product categories in City Center
+slices <- c(97418,495,35657,0,139237,16162,92336,3113)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in City Center",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#
+```
+
+In the results of the region Sant, we can see that over ⅓ of the sellings goes to beer. After this we can see that another big seller is soft drinks with 27%
+
+```{r, message=FALSE}
+##Dividing product categories in Sants
+slices <- c(111361,325,34773,0,81442,16685,50933,4926)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Sants",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#
+
+```
+
+
+In Les Corts we can see again that beer is sold the most, with a respective 45%. Ather the beer, soft drinks are again the biggest with 20%.
+
+```{r, message=FALSE}
+##Dividing product categories in Les Corts
+slices <- c(107865,802,30611,0,30114,15697,49233,6287)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Les Corts",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+#
+
+```
+
+
+For the region Castelldefels, it is almost the same as for Les Corts. Again beer is the biggest product with 46% and the product after that is soft drinks with 23%.
+
+```{r, message=FALSE}
+##Dividing product categories in Castelldefels
+slices <- c(301726,2062,59426,0,153595,82040,55166,4699)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Castelldefels",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+
+```
+
+At last we have the region Sant Boi. This region has 2 major sellers, that are Soft drinks and beer with 35 and 32%. 
+
+```{r, message=FALSE}
+##Dividing product categories in Sant Boi
+slices <- c(187681,1448,73541,0,204072,996,110422,10039)
+lbls <- c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(pct) # add percents to labels
+lbls <- paste(lbls,"%",sep="") # ad % to labels
+
+slices +
+  geom_text(aes(label = paste0(value,
+                               " (",
+                               scales::percent(value / sum(value)),
+                               ")")),
+            position = position_stack(vjust = 0.5))
+
+pie(slices, labels = lbls, main = "Dividing product categories in Sant Boi",col = rainbow(length(lbls)))
+legend("topright", c("Beer", "Coffee", "Food", "Packaging", "Soft Drink", "Specials", "Water", "Wine"), cex = 0.5,
+   fill = rainbow(length(lbls)))
+
+
+
+```
+
+Linegraph with revenue streams each month in 2019 and 2020
+
+```{r, message=FALSE}
+
+
+v <- c(1470911,1965656,2301039,2595378,2682937,2612859,2941578,2674732,2451111,2453772,1927779,2214496)
+t <- c(1490467,1724521,946281,-523,1912220,1507345,1809210,1414827,1544616,759651,428755,1126668)
+
+
+# Plot the bar chart.
+plot(v,type = "o",col = "red", xlab = "Month", ylab = "Rain fall", 
+   main = "Rain fall chart")
+
+lines(t, type = "o", col = "blue")
+
+
+``` 
+
+Waffle graph for revenues based on each Sales type for
+
+```{r}
+sales <- c(`Carga Inicial Facturas`=2041396.6, `Carga Inicial SSTT`=838946.1,
+`Facturas`=18392255.6, `Servicios a terceros`=7019653.9)
+
+waffle(sales/100000, rows=20,colors=c("#44D2AC", "#1879bf", "#B67093", 
+                "#E48B8B"), title="Total Revenue for each Sale type, 2019",
+xlab="1 Square = 100K Euros")
+```
+
+# Recommendations
+
+## Customer analytics
+Choose some columns about customers.
+```{r}
+ddi$Postal_Code<-as.factor(ddi$Postal_Code)
+ddi$Store_type<-as.factor(ddi$Store_type)
+ddi$Store_name<-as.factor(ddi$Store_name)
+ddi$Sale_type<-as.factor(ddi$Sale_type)
+
+ddi_customers<-ddi%>%
+  select(Postal_Code,Store_type,Store_name,Sale_type,Total_revenue20,Total_revenue20)%>%
+  group_by(Postal_Code)
+
+```
+
+```{r}
+set.seed(1212)
+ddi_customers_split<-initial_split(ddi_customers,prop = 0.75)
+```
+
+```{r}
+ddi_customers_recipe<-training(ddi_customers_split)%>%
+  recipe(Store_type~.)%>%
+  step_corr(all_numeric())%>%
+  step_center(all_numeric(),-all_numeric())%>%
+  step_scale(all_numeric(),-all_numeric())%>%
+  prep()
+```
+
+To build a model using the train set 
+```{r}
+ddi_customers_ranger<-rand_forest(mode = "classification")%>%
+  set_engine("ranger")
+ddi_customers_ranger_workflow<-workflow()%>%
+  add_recipe(ddi_customers_recipe)%>%
+  add_model(ddi_customers_ranger)%>%
+  fit(training(ddi_customers_split))
+ddi_customers_ranger_workflow
+```
+
+To predict the train set
+```{r}
+ddi_customers_pred_train<-ddi_customers_ranger_workflow%>%
+  predict(training(ddi_customers_split))%>%
+  bind_cols(training(ddi_customers_split))
+
+
+ddi_customers_pred_train%>%
+  conf_mat(truth=Store_type,estimate=.pred_class)
+```
+
+model performance
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+class_metrics<-metric_set(accuracy,precision,recall)
+
+ddi_customers_pred_train%>%
+  class_metrics(truth = Store_type,estimate = .pred_class)
+
+ddi_customers_prod_train<-ddi_customers_ranger_workflow%>%
+  predict(training(ddi_customers_split),type="prob")%>%
+  bind_cols(training(ddi_customers_split))
+
+```
+We can see that the accuracy of the model is 0.803,the presition of model is 0.961 and the real of model is 0.581.
+
+ROC curve
+```{r}
+ddi_customers_prod_train%>%
+  roc_auc(Store_type,`.pred_ALIMENTACION TRADICIONAL`,`.pred_BAR COPAS TARDE/NOCHE`,`.pred_BAR TAPAS <10€`,`.pred_BAR TAPAS >10€`,`.pred_BAR/RESTAURANTE MENU DIARIO`,`.pred_CAFETERIA/GRANJA/FLECA`,`.pred_CASH/MAJORISTA/BODEGA`,`.pred_CATERING COLECTIVIDADES`,`.pred_CHIRINGUITO / KIOSKO`,`.pred_COMIDA PREPARADA`,`.pred_EVENTOS / FIESTAS`,`.pred_F.FOOD(KEBAB/PIZZA/HAMBURG)`,`.pred_HOTEL 4/5 ESTRELLAS`,`.pred_OTROS / NO  CENSADOS`,`.pred_PENDIENTE DE SEGMENTAR`,`.pred_REST. CARTA >25€`,`.pred_REST. CARTA 12€ A 25€`,`.pred_RESTO HOTELES / APARTAMENTOS`,`.pred_SIN CAPACIDAD DE COMPRA`,.pred_SUBDISTRIBUIDORES,`.pred_TIENDA GOURMET / VINACOTECA`,.pred_VENDING,`.pred_VENTA ALMACEN & PERSONAL`,`.pred_XX NO UTLILIZAR`,`.pred_ZZ-No informado`)
+```
+
+
+```{r}
+ddi_customers_prod_train%>%
+  roc_curve(Store_type,`.pred_ALIMENTACION TRADICIONAL`,`.pred_BAR COPAS TARDE/NOCHE`,`.pred_BAR TAPAS <10€`,`.pred_BAR TAPAS >10€`,`.pred_BAR/RESTAURANTE MENU DIARIO`,`.pred_CAFETERIA/GRANJA/FLECA`,`.pred_CASH/MAJORISTA/BODEGA`,`.pred_CATERING COLECTIVIDADES`,`.pred_CHIRINGUITO / KIOSKO`,`.pred_COMIDA PREPARADA`,`.pred_EVENTOS / FIESTAS`,`.pred_F.FOOD(KEBAB/PIZZA/HAMBURG)`,`.pred_HOTEL 4/5 ESTRELLAS`,`.pred_OTROS / NO  CENSADOS`,`.pred_PENDIENTE DE SEGMENTAR`,`.pred_REST. CARTA >25€`,`.pred_REST. CARTA 12€ A 25€`,`.pred_RESTO HOTELES / APARTAMENTOS`,`.pred_SIN CAPACIDAD DE COMPRA`,.pred_SUBDISTRIBUIDORES,`.pred_TIENDA GOURMET / VINACOTECA`,.pred_VENDING,`.pred_VENTA ALMACEN & PERSONAL`,`.pred_XX NO UTLILIZAR`,`.pred_ZZ-No informado`)%>%
+  autoplot()
+```
+Test set:confusion matrics
+```{r, warning=FALSE, message=FALSE}
+ddi_customers_ranger_workflow%>%
+  predict(testing(ddi_customers_split))%>%
+  bind_cols(testing(ddi_customers_split))%>%
+  class_metrics(truth=Store_type,estimate=.pred_class)
+```
+
+
+
+
+## Basket Analysis
+
+We want to understand which products are bought more regarding frequency in order to have a product recommendation system for the distribution company. Since there are 2736 unique products, we will only concentrate on rules with more significance.
+
+
+
+Building the transaction matrix
+Let’s build the transaction table:
+
+-as rows as transactions,
+-as columns as items,
+-each elements a logical variable indicating if item j is in transaction i.
+
+```{r}
+wine <- ddi %>% filter(Product_category == "Wine") %>% select(Store_name, Product_name)
+ddi_table <- 
+  wine %>%
+  group_by(Store_name, Product_name) %>%
+  summarise(exists = TRUE, .groups = "drop") %>%
+  pivot_wider(names_from = "Product_name", values_from = "exists") %>%
+  replace(is.na(.), FALSE)
+
+```
+
+The result is a table with 3199 Stores & 2736 Products.
+
+From the transaction table we get the transaction matrix and after that apply the rules.
+
+```{r}
+ddi_matrix <- as(ddi_table %>% select(-Store_name), "transactions")
+```
+
+
+
+
+### Rules mining
+
+When applying the condition for rules, we can target different result. In this case, we will target a lot of transactions by having a 3 percent support but on the other hand with a confidence of 85 percent to obtain the most frequent transactions.
+
+
+```{r}
+
+
+rules_wine <- apriori(ddi_matrix, 
+                 control = list(verbose = FALSE),
+                 parameter = list(supp = 0.01, conf = 0.30))
+
+summary(rules_wine)
+```
+
+
+Greater lift values indicate stronger associations
+
+```{r}
+#sort by lift
+rules_wine <- sort(rules_wine, by="lift", decreasing = TRUE)
+```
+
+Scatter plot for all rules
+
+
+```{r, message=FALSE}
+plot(rules_wine, engine = "ggplot2", main = NULL, jitter = 2) +
+scale_color_gradient2(low = "green", mid = "red", high = "blue",
+midpoint = 1, limits = c(1,30)) +
+labs(x = "Support", y = "Confidence.", color = "Lift") +
+theme_minimal()
+
+```
+
+We see more density with lower Confidence and Support.
+As support increses the lift will get lower.
+
+
+```{r}
+## display some rules
+inspect(rules_wine[1:10], ruleSep = "~~>", itemSep = " + ", setStart = "", setEnd = "", 
+  linebreak = FALSE)
+
+```
+
+As the result show, we can see based on rule 8 that 96 percent of Stores who bought "LETONA CAMBIOS 1L" also bought "LETONA ENTERA GRAN CREM 1L RET 12U" product.
+
+
+From this point the analysis can be very wide. For instance, sorting with lift would allow us to interpret the most significant rules. Below a specific product of **Soft Drink** category is analyzed to illustrate the method.
+
+
+```{r}
+rules_ex <- subset(rules_wine, subset = lift > 25 )
+inspect(rules_ex)
+
+```
+
+
+## Basket Analysis Part2
+
+This time with product category
+
+
+```{r}
+ddi_table2 <- 
+  ddi %>% select(Store_name, Product_category) %>%
+  group_by(Store_name, Product_category) %>%
+  summarise(exists = TRUE, .groups = "drop") %>%
+  pivot_wider(names_from = "Product_category", values_from = "exists") %>%
+  replace(is.na(.), FALSE)
+```
+
+The result is a table with 3199 Stores & 9 Product Categories.
+
+From the transaction table we get the transaction matrix doing:
+
+```{r}
+ddi_matrix2 <- as(ddi_table2 %>% select(-Store_name), "transactions")
+
+summary(ddi_matrix2)
+
+```
+
+Right skewed distribution, checked
+
+
+```{r}
+# Absolute Item Frequency Plot
+itemFrequencyPlot(ddi_matrix2, topN = 10, type = "absolute", col = "wheat2", xlab = "Item Name", ylab = "Frequency (absolute)")
+```
+
+have the highest frequency in the transactions.
+
+
+
+### Rules mining
+
+Let’s mine some rules on ddi_matrix (we’ll have more rules if we lower minimal values of supp and conf). Since we have not many products like the previous part, this time we consider lower parameters to obtain more rules.
+
+```{r}
+rules_ddi2 <- apriori(ddi_matrix2, 
+                 control = list(verbose = FALSE),
+                 parameter = list(supp = 0.001, conf = 0.01))
+
+
+summary(rules_ddi2)
+```
+
+
+Greater lift values indicate stronger associations so we sort the rules based on their lift.
+
+```{r}
+#sort them by lift
+rules_ddi2 <- sort(rules_ddi2, by="lift", decreasing = TRUE)
+```
+
+In this part we can find out how other products would have a basket relationship with Coffee. 
+
+```{r}
+rules_coffee <- subset(rules_ddi2, subset = rhs %in% "Coffee" & lift > 3.45)
+inspect(rules_coffee)
+```
+
+As the result show, the rules with highest lift have a support of less than 2 percent. This shows us that Coffee has lower transactions than the other product. 
+
+The same method can be implemented for Wine category.
+
+```{r}
+rules_wine <- subset(rules_ddi2, subset = rhs %in% "Wine" & lift > 2.6)
+inspect(rules_wine)
+```
+
+
+
+```{r}
+
+rules_wine <- subset(rules_ddi2, subset = rhs %in% "Wine" & lift > 2.6)
+
+
+rules_wine2 <- subset(rules_wine, subset = lhs %in% "Beer")
+inspect(rules_wine2)
+
+```
+
+
+
+```{r}
+library(arulesViz)
+# Graph (default layout)
+plot(rules_wine, method="grouped")
+```
+
+This shows the correlation between the rules and also comparing their parameters.
+
+# Customer Segmentation using RFM Analysis
+  
+RFM is a method used for analyzing customer value. It is based on pareto principle: 20% of customers generate 80% of revenue.
+
+RFM stands for the three dimensions:
+  
+  *Recency – How recently did the customer purchase?
+  *Frequency – How often do they purchase?
+  *Monetary Value – How much do they spend?
+  
+RFM measures how much one customer contributes to a business. Recency tells when the most recent purchase of a particular customer was, frequency measures how frequently a customer buys from the business and monetary measures how much a customer spends at the business on average.
+The resulting segments can be ordered from most valuable (highest recency, frequency, and value) to least valuable (lowest recency, frequency, and value). Identifying the most valuable RFM segments can capitalize on chance relationships in the data used for this analysis.
+
+
+## Data Cleaning
+
+Prepare the data set. We need Store name, transaction date, Order quantity, Revenue.
+
+```{r}
+#select columns we need
+rfm_prep <- ddi %>% select(Store_name, contains(c("UMB","Euros")))
+```
+
+
+### Step1: Calculate Number of Invoices
+
+```{r}
+InvoiceNo <- ddi %>% select(Store_name) %>% group_by(Store_name) %>%
+  summarise(NoInvoices=n())
+```
+
+
+### Step2: Calculate Order Quantity
+
+
+```{r, warning=FALSE, message=FALSE}
+#build quantity data set
+quantity <- ddi %>% select(Store_name, contains("UMB"))
+#replace - with zero
+quantity[quantity == "-"] <- "0"
+#make columns numeric again
+quantity[,-1] <- sapply(quantity[,-1],as.numeric)
+#remove all-zero rows
+quantity_clean <- quantity[rowSums(quantity[,-1])>0, ]
+#get data for each store & month 
+quantity_grp <- quantity_clean %>% 
+  group_by(Store_name) %>% 
+  summarise(across(everything(), list(sum)))
+#pivot table
+quantity_pivot <- quantity_grp %>% 
+  pivot_longer(cols = contains("UMB"), 
+               names_to = "Date", values_to = "Quantity")
+#remove zero rows
+quantity_pivot_nozero <- quantity_pivot[rowSums(quantity_pivot[,3])>0, ]
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+library(plyr)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+quantity_pivot_nozero$Date <- 
+  revalue(quantity_pivot_nozero$Date,
+                                      c("jun UMB  ant._1" = "2019/06/01",
+                                        "jul UMB  ant._1" = "2019/07/01",
+                                        "ago UMB  ant._1" = "2019/08/01",
+                                        "sep UMB  ant._1" = "2019/09/01",
+                                        "oct UMB  ant._1" = "2019/10/01",
+                                        "nov UMB  ant._1" = "2019/11/01",
+                                        "dic UMB  ant._1" = "2019/12/01",
+                                        "ene UMB  ant._1" = "2019/01/01",
+                                        "feb UMB  ant._1" = "2019/02/01",
+                                        "mar UMB  ant._1" = "2019/03/01",
+                                        "abr UMB  ant._1" = "2019/04/01",
+                                        "may UMB  ant._1" = "2019/05/01",
+                                        "jun UMB_1" = "2020/06/01",
+                                        "jul UMB_1" = "2020/07/01",
+                                        "ago UMB_1" = "2020/08/01",
+                                        "sep UMB_1" = "2020/09/01",
+                                        "oct UMB_1" = "2020/10/01",
+                                        "nov UMB_1" = "2020/11/01",
+                                        "dic UMB_1" = "2020/12/01",
+                                        "ene UMB_1" = "2020/01/01",
+                                        "feb UMB_1" = "2020/02/01",
+                                        "mar UMB_1" = "2020/03/01",
+                                        "abt UMB_1" = "2020/04/01",
+                                        "may UMB_1" = "2020/05/01"))
+
+```
+
+```{r, message=FALSE, echo=FALSE}
+detach("package:plyr", unload = TRUE)
+```
+
+### Step3: Calculate Revenue
+
+```{r message=FALSE, warning=FALSE}
+#build revenue data set
+revenue <- ddi %>% select(Store_name, contains("Euros"))
+#replace - with zero
+revenue[revenue == "-"] <- "0"
+#make columns numeric again
+revenue[,-1] <- sapply(revenue[,-1],as.numeric)
+#remove all-zero rows
+revenue_clean <- revenue[rowSums(revenue[,-1])>0, ]
+#get data for each store & month 
+revenue_grp <- revenue_clean %>% group_by(Store_name) %>% summarise(across(everything(), list(sum)))
+#pivot table
+revenue_pivot <- revenue_grp %>% pivot_longer(cols = contains("Euros"), names_to = "Date", values_to = "revenue")
+#remove zero rows
+revenue_pivot_nozero <- revenue_pivot[rowSums(revenue_pivot[,3])>0, ]
+```
+
+
+```{r message=FALSE, echo=FALSE}
+library(plyr)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+revenue_pivot_nozero$Date <- revalue(revenue_pivot_nozero$Date,
+                                      c("jun Euros  ant._1" = "2019/06/01",
+                                        "jul Euros  ant._1" = "2019/07/01",
+                                        "ago Euros  ant._1" = "2019/08/01",
+                                        "sep Euros  ant._1" = "2019/09/01",
+                                        "oct Euros  ant._1" = "2019/10/01",
+                                        "nov Euros  ant._1" = "2019/11/01",
+                                        "dic Euros  ant._1" = "2019/12/01",
+                                        "ene Euros  ant._1" = "2019/01/01",
+                                        "feb Euros  ant._1" = "2019/02/01",
+                                        "mar Euros  ant._1" = "2019/03/01",
+                                        "abr Euros  ant._1" = "2019/04/01",
+                                        "may Euros  ant._1" = "2019/05/01",
+                                        "jun Euros_1" = "2020/06/01",
+                                        "jul Euros_1" = "2020/07/01",
+                                        "ago Euros_1" = "2020/08/01",
+                                        "sep Euros_1" = "2020/09/01",
+                                        "oct Euros_1" = "2020/10/01",
+                                        "nov Euros_1" = "2020/11/01",
+                                        "dic Euros_1" = "2020/12/01",
+                                        "ene Euros_1" = "2020/01/01",
+                                        "feb Euros_1" = "2020/02/01",
+                                        "mar Euros_1" = "2020/03/01",
+                                        "abt Euros_1" = "2020/04/01",
+                                        "may Euros_1" = "2020/05/01"))
+
+
+```
+
+```{r, message=FALSE, echo=FALSE}
+detach("package:plyr", unload = TRUE)
+```
+
+### Step4: Recode Variables
+
+We should do some recoding and convert character variables to factors.
+
+
+```{r}
+quantity_rfm <- quantity_pivot_nozero %>% 
+  mutate(Store_name=as.factor(Store_name),
+         Date=as.Date(Date, '%Y/%m/%d'))
+
+
+revenue_rfm <- revenue_pivot_nozero %>% 
+  mutate(Store_name=as.factor(Store_name),
+         Date=as.Date(Date, '%Y/%m/%d'))
+
+```
+
+```{r}
+rfm_prep <- merge(revenue_rfm, quantity_rfm, by = c("Store_name","Date"), all = FALSE)
+rfm_prep <- merge(rfm_prep, InvoiceNo, by.x = "Store_name", all = FALSE)
+rfm_prep <- rfm_prep %>% drop_na()
+glimpse(rfm_prep)
+str(rfm_prep)
+
+kable(tail(rfm_prep))
+```
+
+
+
+
+### Step5: Calculate RFM
+
+To implement the RFM analysis, we need to further process the data set in by the following steps:
+
+1. Find the most recent date for each Store and calculate the days to the now (in this case we chose 01/06/2021) , to get the Recency data.
+2. Calculate the quantity of transactions of a Store, to get the Frequency data.
+3. Sum the amount of money a Store spent and divide it by Frequency, to get the amount per transaction on average, that is the Monetary data.
+
+```{r}
+
+rfm_ddi <- rfm_prep %>% 
+  group_by(Store_name) %>% 
+  summarise(recency=as.numeric(as.Date("2021-06-01")- max(Date)),
+            frequency=NoInvoices, 
+            monitery= sum(revenue)) %>%
+  distinct(Store_name, .keep_all = TRUE)
+
+summary(rfm_ddi)
+
+kable(tail(rfm_ddi))
+```
+
+## RFM Analysis
+
+We will calculate the scores based on the quartiles obtained from the summary.
+
+```{r}
+#Scoring
+#R_score
+rfm_ddi$R_Score[rfm_ddi$recency>457]<-1
+rfm_ddi$R_Score[rfm_ddi$recency>280 & rfm_ddi$recency<=457 ]<-2
+rfm_ddi$R_Score[rfm_ddi$recency>220 & rfm_ddi$recency<=280]<-3
+rfm_ddi$R_Score[rfm_ddi$recency<=220]<-4
+
+#F_score
+rfm_ddi$F_Score[rfm_ddi$frequency<10]<-1
+rfm_ddi$F_Score[rfm_ddi$frequency>=10 & rfm_ddi$frequency<20]<-2
+rfm_ddi$F_Score[rfm_ddi$frequency>=20 & rfm_ddi$frequency<40 ]<-3
+rfm_ddi$F_Score[rfm_ddi$frequency>=40]<-4
+
+#M_score
+rfm_ddi$M_Score[rfm_ddi$monitery<= 12942.10]<-1
+rfm_ddi$M_Score[rfm_ddi$monitery>=12942.10 & rfm_ddi$monitery<5225.37]<-2
+rfm_ddi$M_Score[rfm_ddi$monitery>=5225.37 & rfm_ddi$monitery<1401.04 ]<-3
+rfm_ddi$M_Score[rfm_ddi$monitery>=1401.04]<-4
+
+#RFM_score
+rfm_ddi<- rfm_ddi %>% mutate(RFM_Score = 100*R_Score + 10*F_Score+M_Score)
+```
+
+
+## Customer Segments
+
+In this part the customers will be classified based on the recency, frequency and monetary scores.
+
+```{r}
+#Customer Segmentation
+rfm_ddi$segmentRFM <- NULL
+champions <- c(444)
+loyal_customers <- c(334, 342, 343, 344, 433, 434, 443)
+potential_loyalist <- c(332,333,341,412,413,414,431,432,441,442,421,422,423,424)
+recent_customers <- c(411)
+promising <- c(311, 312, 313, 331)
+needing_attention <- c(212,213,214,231,232,233,241,314,321,322,323,324)
+at_risk <- c(112,113,114,211,141,131,132,133,142,124,123,122,121,224,223,222,221)
+cant_lose <- c(134,143,144,234,242,243,244)
+lost <- c(111)
+
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% champions)] = "Champions"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% loyal_customers)] = "Loyal Customers"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% potential_loyalist)] = "Potential Loyalist"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% recent_customers)] = "New customers"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% promising)] = "Promising"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% needing_attention)] = "Need Attention"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% at_risk)] = "At Risk"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% cant_lose)] = "Can’t Lose Them"
+rfm_ddi$segmentRFM[which(rfm_ddi$RFM_Score %in% lost)] = "Lost"
+```
+
+Evaluate the segment size. Once we have classified a customer into a particular segment, we can take appropriate action to increase their lifetime value.
+
+```{r}
+segment_size <-
+ rfm_ddi %>%
+  group_by(segmentRFM) %>%
+ count(segmentRFM) %>%
+ arrange(desc(n)) %>%
+ rename(segmentRFM = segmentRFM, Count = n)
+```
+
+```{r}
+
+segment_size$segmentRFM <- factor(segment_size$segmentRFM,
+levels = segment_size$segmentRFM[order(-segment_size$Count)])
+
+segment_size %>%
+  ggplot(aes(x=segmentRFM, y=Count)) +
+  geom_bar(stat="identity", 
+           show.legend=FALSE, fill="darkred") +
+  scale_color_brewer(palette = "BuPu") +
+  geom_label(aes(label=Count)) +
+  coord_flip() +
+  theme_bw() 
+
+
+```
+
+## Recommendation
+
+In conclusion, we have 9 segments in our dataset.
+
+•	 593 Champions are our best customers, who bought most recently, most often, and are heavy spenders. They can become early adopters for new products and will help promote our brand.
+•	484 Potential Loyalists are our recent customers with average frequency and who spent a good amount. Offer membership or loyalty programs or recommend related products to upsell them and help them become our Loyalists or Champions.
+•	500 At Risk Customers are our customers who purchased often and spent big amounts, but haven’t purchased recently. Send them personalized reactivation campaigns to reconnect, and offer renewals and helpful products to encourage another purchase.
+•	351 Can’t Lose Them are customers who used to visit and purchase quite often, but haven’t been visiting recently. Bring them back with relevant promotions, and run surveys to find out what went wrong and avoid losing them to a competitor.
+•	118 New Customers are our customers who have a high overall RFM score but are not frequent shoppers. Start building relationships with these customers by providing onboarding support and special offers to increase their visits.
+
+
+Given the cost to create and launch a new product, combined with the rate of failure, being able to successfully develop and bring new products to market is an important capability.
+
+# Conclusion
+
+This type of analysis can be conducted on the data set as the transactions get higher to understand the customer needs and leverage other products to introduce new ones. The market has a lot of potential for Coffee and Wine, thus, with the right strategy and using the historical data the company can escalate faster comparing to rivals. 
